@@ -182,7 +182,29 @@ app.post("/", (req: Request, res: Response) => {
                 return res.json({ jsonrpc: "2.0", id, result: { context: { slot: currentSlot }, value: matchingAccounts } });
             }
 
+            case "requestAirdrop": {
+                const pubkey = params?.[0];
+                const lamports = params?.[1];
+                if (!pubkey || !lamports) return res.json({
+                    jsonrpc: "2.0",
+                    id,
+                    error: {
+                        code: -32602,
+                        message: "Invalid params"
+                    }
+                });
 
+                const acc = accounts.get(pubkey) || { pubkey, lamports: 0, owner: SYSTEM_PROGRAM_ID, data: Buffer.alloc(0), executable: false };
+                acc.lamports += lamports;
+                accounts.set(pubkey, acc);
+
+                const dummySignature = bs58.encode(crypto.randomBytes(64));
+                return res.json({
+                    jsonrpc: "2.0",
+                    id,
+                    result: dummySignature
+                });
+            }
 
             default:
                 return res.json({
