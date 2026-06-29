@@ -294,8 +294,18 @@ app.post("/", (req: Request, res: Response) => {
                                 newAccount.data = Buffer.alloc(space);
                                 newAccount.owner = ownerPubkey;
                             } else if (discriminator === 2) { // Transfer
+                                const lamports = Number(data.readBigUInt64LE(4));
+                                const fromAcc = getWritableAccount(instruction.keys[0]!.pubkey.toBase58());
+                                const toAcc = getWritableAccount(instruction.keys[1]!.pubkey.toBase58());
 
+                                if (fromAcc.lamports < lamports) throw new Error("Insufficient balance for transfer");
+                                fromAcc.lamports -= lamports;
+                                toAcc.lamports += lamports;
+                            } else {
+                                throw new Error(`Unsupported System Program instruction: ${discriminator}`);
                             }
+                        } else if (programId === TOKEN_PROGRAM_ID) {
+
                         }
                     }
                 } catch (error) {
