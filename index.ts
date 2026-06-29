@@ -2,6 +2,7 @@ import express, { type Request, type Response } from "express";
 import { Transaction, PublicKey, SystemProgram } from "@solana/web3.js";
 import bs58 from "bs58";
 import crypto from "crypto";
+import { isConstructSignatureDeclaration } from "typescript";
 
 const app = express();
 app.use(express.json());
@@ -204,6 +205,102 @@ app.post("/", (req: Request, res: Response) => {
                     id,
                     result: dummySignature
                 });
+            }
+
+            case "sendTransaction": {
+                const encodeTx = params?.[0];
+                if (!encodeTx) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Invalid params" } });
+
+                try {
+                    const txBuffer = Buffer.from(encodeTx, "base64");
+                    const tx = Transaction.from(txBuffer);
+
+                    // 1. Verify recent blockhash
+                    if (!validBlockhashes.has(tx.recentBlockhash!)) {
+                        return res.json({
+                            jsonrpc: "2.0",
+                            id,
+                            error: {
+                                code: -32003,
+                                message: "Transaction failed: Blockhash not found"
+                            }
+                        });
+                    }
+
+                    // 2. Cryptographic signature verification
+                    if (!tx.verifySignatures()) {
+                        return res.json({
+                            jsonrpc: "2.0",
+                            id,
+                            error: {
+                                code: -32003,
+                                message: "Transaction failed: Signature verificaiton failed"
+                            }
+                        });
+                    }
+
+                    // ensure all declared required signers have signature values puopulated
+                    for (const signatureInfo of tx.signatures) {
+                        if (!signatureInfo.signature || signatureInfo.signature.every(b => b === 0)) {
+                            return res.json({
+                                jsonrpc: "2.0",
+                                id,
+                                error: {
+                                    code: -32003,
+                                    message: "Transaction failed: Missing signature for required signer"
+                                }
+                            });
+                        }
+                    }
+
+                    // 3. Isolated state snapshot environment (for atomicity)
+                    const stateCache = new Map<string, AccountState>();
+                    const getWritableAccount = (pubkeyStr: string): AccountState => {
+                        if (!stateCache.has(pubkeyStr)) {
+                            const existing = accounts.get(pubkeyStr);
+                            stateCache.set(pubkeyStr, existing ? { ...existing, data: Buffer.from(existing.data) } : {
+                                pubkey: pubkeyStr,
+                                lamports: 0,
+                                owner: SYSTEM_PROGRAM_ID,
+                                data: Buffer.alloc(0),
+                                executable: false
+                            });
+                        }
+                        return stateCache.get(pubkeyStr)!;
+                    };
+
+                    // 4. Instruction Processing Loop
+                    for (const instruction of tx.instructions) {
+                        const programId = instruction.programId.toBase58();
+                        const data = instruction.data;
+
+                        if (programId === SYSTEM_PROGRAM_ID) {
+                            const discriminator = data.readUInt32LE(0);
+
+                            if (discriminator === 0) { // CreateAccount
+                                const lamports = Number(data.readBigUInt64LE(4));
+                                const space = Number(data.readBigUInt64LE(12));
+                                const ownerPubkey = bs58.encode(data.subarray(20, 52));
+
+                                const payer = getWritableAccount(instruction.keys[0]!.pubkey.toBase58());
+                                const newAccount = getWritableAccount(instruction.keys[1]!.pubkey.toBase58());
+
+                                if (accounts.has(newAccount.pubkey) && (accounts.get(newAccount.pubkey)!.lamports > 0 || accounts.get(newAccount.pubkey)!.data.length > 0)) {
+                                    throw new Error("Account already exists");
+                                }
+                                if (payer.lamports < lamports) throw new Error("Insufficient funds for creation");
+
+                                payer.lamports -= lamports;
+                                newAccount.data = Buffer.alloc(space);
+                                newAccount.owner = ownerPubkey;
+                            } else if (discriminator === 2) { // Transfer
+
+                            }
+                        }
+                    }
+                } catch (error) {
+
+                }
             }
 
             default:
